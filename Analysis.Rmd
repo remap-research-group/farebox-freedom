@@ -1,0 +1,2044 @@
+---
+title: "Initial Analysis: Thesis"
+author: "Vir Chachra"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r datasets}
+
+library(tidyverse)
+library(tidycensus)
+library(data.table)
+library(sf)
+library(kableExtra)
+library(ggspatial)
+library(ggmap)
+library(gt)
+library(stargazer)
+library(rempsyc)
+library(vtable)
+library(findSVI)
+library(readr)
+library(data.table)
+library(rgeoda)
+library(writexl)
+library(readxl)
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF", "#7AA6DCFF", "#388E3CFF", "#D32F2FFF")
+state_list <- c("MA", "RI", "IL", "IN", "PA", "NJ", "CA", "WA", "NY", "CT", "GA")
+
+# Census race data pull 
+
+MBTA_tracts_21 <- st_read("2021_MBTA_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, rt_tracts)  %>% mutate(operator = "MBTA")
+
+SEPTA_tracts_21 <- st_read("2021_SEPTA_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, rt_tracts) %>% mutate(operator = "SEPTA")
+
+Chicago_tracts_21 <- st_read("2021_CTA_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, rt_tracts)  %>% mutate(operator = "Chicago")
+
+
+LA_tracts_21 <- st_read("2021_LA_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, "rt_tracts" = hr_tracts) %>% mutate(operator = "LA")
+
+Seattle_tracts_19 <- st_read("2019_Seattle_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, rt_tracts)  %>% mutate(operator = "Seattle")
+Seattle_tracts_21 <- st_read("2021_Seattle_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, rt_tracts)  %>%  mutate(operator = "Seattle")
+
+MTA_tracts_21 <- st_read("2021_MTA_DOT_Index.geojson") %>%  select(GEOID, mode_group, cr_tracts, bus_tracts, rt_tracts)  %>%  mutate(operator = "MTA")
+
+MARTA_tracts_21 <- st_read("2021_MARTA_DOT_Index.geojson") %>%  select(GEOID, mode_group, bus_tracts, rt_tracts)  %>%  mutate(operator = "MARTA") %>% mutate(cr_tracts = 0)
+
+
+
+colors <- c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF", "#7AA6DCFF", "#388E3CFF", "#D32F2FFF", "#FF5722FF", "#8E44ADFF")
+
+
+#Add transit miles, transit spending, and transportation cost burdened population from 2019 and 2021 TIAT datasets, do it once and then
+#comment out the code
+
+#Adjusting for inflation to June 2021 dollars
+
+inflation_2019_2021 = 1.06
+
+tiat_tracts <- st_read("DOT TIAT Source Data//TIAT_Cost_Burden_Tracts_2021_v01_2024_11_24//tracts_2021//cb_2020_us_tract_500k//cb_2020_us_tract_500k.shp")
+
+
+tiat_2019 <- fread("profile_final_tract_2019.csv") %>%
+  select(
+    geoid,
+    state_name,
+    hh_profile,
+    transit_spending,
+    median_income,
+    mean_income,
+    population,
+    employment_density,
+    transportation_cost,
+    transportation_cost_burden,
+    transit_miles
+  ) %>%
+  mutate(
+    inflation_adjusted_transport_cost = inflation_2019_2021 * transportation_cost,
+    inflation_adjusted_transit_cost = inflation_2019_2021 * transit_spending,
+    inflation_adjusted_median_income = inflation_2019_2021 * median_income, 
+    inflation_adjusted_mean_income = inflation_2019_2021 * mean_income, 
+    inflation_adjusted_transportation_cost_burden = (inflation_adjusted_transport_cost / inflation_adjusted_median_income),
+    inflation_adjusted_transit_cost_burden = (inflation_adjusted_transit_cost / inflation_adjusted_median_income),
+    
+    
+    log_transportation_cost_burden = log(inflation_adjusted_transportation_cost_burden),
+    log_transit_cost_burden = log(inflation_adjusted_transit_cost_burden),
+    log_population = log(population),
+    log_transit_miles = log(transit_miles),
+    log_emp_density = log(employment_density),
+    log_transport_cost = log(inflation_adjusted_transport_cost), 
+    log_transit_spending = log(inflation_adjusted_transit_cost)
+  )
+
+# have to standardize and convert geoids
+checks_2019 <- data.frame("original_geoid" = unique(tiat_2019$geoid)) %>%
+  mutate(char_geoid = as.character(original_geoid),
+         nchars = nchar(char_geoid))
+
+checks_2019 <- checks_2019 %>%
+  mutate(char_geoid = ifelse(nchars == 10, paste0("0", char_geoid), char_geoid)) %>%
+  mutate(nchars = nchar(char_geoid))
+
+
+tiat_2019 <- tiat_2019 %>%
+  left_join(checks_2019 %>% select(original_geoid, char_geoid),
+            by = c("geoid" = "original_geoid")) %>% mutate(geoid = char_geoid) %>% select(-char_geoid)
+
+
+
+
+# Read and process 2021 dataset
+tiat_2021 <- fread("profile_tract_2021.csv") %>%
+ select(
+    geoid,
+    state_name,
+    hh_profile,
+    transit_spending,
+    median_income,
+    mean_income,
+    population,
+    employment_density,
+    transportation_cost,
+    transportation_cost_burden,
+    transit_miles
+  ) %>%
+  mutate(
+    inflation_adjusted_transport_cost = transportation_cost,
+    inflation_adjusted_transit_cost =  transit_spending,
+    inflation_adjusted_median_income =  median_income, 
+    inflation_adjusted_mean_income = mean_income, 
+    inflation_adjusted_transportation_cost_burden = (inflation_adjusted_transport_cost / inflation_adjusted_median_income),
+    inflation_adjusted_transit_cost_burden = (inflation_adjusted_transit_cost / inflation_adjusted_median_income),
+    
+    
+    log_transportation_cost_burden = log(inflation_adjusted_transportation_cost_burden),
+    log_transit_cost_burden = log(inflation_adjusted_transit_cost_burden),
+    log_population = log(population),
+    log_transit_miles = log(transit_miles),
+    log_emp_density = log(employment_density),
+    log_transport_cost = log(inflation_adjusted_transport_cost), 
+    log_transit_spending = log(inflation_adjusted_transit_cost)
+  )
+
+
+checks_2021 <- data.frame("original_geoid" = unique(tiat_2021$geoid)) %>%
+  mutate(char_geoid = as.character(original_geoid),
+         nchars = nchar(char_geoid))
+
+checks_2021 <- checks_2021 %>%
+  mutate(char_geoid = ifelse(nchars == 10, paste0("0", char_geoid), char_geoid)) %>%
+  mutate(nchars = nchar(char_geoid))
+
+
+tiat_2021 <- tiat_2021 %>%
+  left_join(checks_2019 %>% select(original_geoid, char_geoid),
+            by = c("geoid" = "original_geoid")) %>% mutate(geoid = char_geoid) %>% select(-char_geoid)
+
+
+
+# tiat_tracts_w_data <- tiat_tracts %>% left_join(tiat_2019, by = c("GEOID" = "geoid")) %>% left_join(tiat_2021, by = c("GEOID"="geoid"))
+
+#CDC SVI - Using this for consistency instead (change 2.16.2025)
+
+
+
+
+# #svi needs to be crosswalked to 2021 geospatial data
+# svi_2019 <- find_svi(
+#   year = rep(2019, length(state_list)),
+#   state = state_list,
+#   geography = "tract",
+# )
+# 
+census_crosswalk <- read.csv("census_crosswalk.csv")
+
+# Crosswalk to standardize geographies for join
+# svi_2019_crosswalked <- svi_2019 %>%
+#   mutate(GEOID = as.numeric(GEOID)) %>%
+#   left_join(census_crosswalk %>% select("GEOID" = GEOID_TRACT_10, "GEOID_NEW" = GEOID_TRACT_20), by = "GEOID") %>%
+#   group_by(GEOID_NEW) %>%
+#   summarise(RPL_themes = mean(RPL_themes),
+#             RPL_theme1 = mean(RPL_theme1),
+#             RPL_theme2 = mean(RPL_theme2),
+#             RPL_theme3 = mean(RPL_theme3),
+#             RPL_theme4 = mean(RPL_theme4)) %>%
+#   mutate(char_geoid = as.character(GEOID_NEW),
+#          nchars = nchar(char_geoid))
+# 
+# svi_2019_crosswalked <- svi_2019_crosswalked %>%
+#    mutate(char_geoid = ifelse(nchars == 10, paste0("0", char_geoid), char_geoid)) %>%
+#   mutate(nchars = nchar(char_geoid),
+#          GEOID = char_geoid) %>%
+#   select(-c(GEOID_NEW, char_geoid, nchars))
+# 
+# 
+# 
+# 
+# 
+# svi_2021 <- find_svi(
+#   year =  rep(2021, length(state_list)),
+#   state = state_list,
+#   geography = "tract"
+# )
+
+# writexl::write_xlsx(svi_2019_crosswalked, "svi_2019.xlsx")
+# writexl::write_xlsx(svi_2021, "svi_2021.xlsx")
+
+svi_2019 <- read_xlsx("svi_2019.xlsx")
+svi_2021 <- read_xlsx("svi_2021.xlsx")
+
+# svi_2019 <- read.csv("svi_2019.csv")
+# svi_2021 <- read.csv("svi_2021.csv")
+
+
+#Seattle Extension is only difference 
+transit_tracts_2019 <- rbind(MBTA_tracts_21,
+                            LA_tracts_21,
+                            Chicago_tracts_21,
+                            SEPTA_tracts_21,
+                            Seattle_tracts_19,
+                            MTA_tracts_21,
+                            MARTA_tracts_21)
+
+
+transit_tracts_2021 <- rbind(MBTA_tracts_21,
+                            LA_tracts_21,
+                            Chicago_tracts_21,
+                            SEPTA_tracts_21,
+                            Seattle_tracts_21,
+                            MTA_tracts_21,
+                            MARTA_tracts_21)
+
+combined_data_2019 <- transit_tracts_2021 %>%
+  left_join(tiat_2019 %>% filter(hh_profile == 1), by = c("GEOID" = "geoid")) %>%
+  left_join(svi_2019 %>% rename("si_2019" = RPL_themes), by = "GEOID") %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.infinite(.), log(pmax(
+    ., 1e-6
+  )), .))) %>% st_as_sf()
+
+combined_data_2021 <- transit_tracts_2021 %>%
+  left_join(tiat_2021 %>% filter(hh_profile == "1: Average Household"), by = c("GEOID" = "geoid")) %>%
+  left_join(svi_2021 %>% rename("si_2021" = RPL_themes) %>% select(-year, -state) , by = "GEOID") %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.infinite(.), log(pmax(
+    ., 1e-6
+  )), .))) %>% st_as_sf()
+
+
+ 
+
+full_data <- rbind(
+  combined_data_2019 %>% mutate(Year = "2019") %>% rename("si_index" = si_2019),
+  combined_data_2021 %>% mutate(Year = "2021") %>% rename("si_index" = si_2021)
+) %>% 
+  mutate(mode_group = case_when(
+    mode_group == "Only RT Access" ~ "Bus and Rapid Transit Access",
+    mode_group == "Only Rapid Transit Access" ~ "Bus and Rapid Transit Access",
+    mode_group == "CR and Rapid Transit Access" ~ "All Modes",
+    TRUE ~ mode_group  # Keeps the original value if no conditions are met
+  ),
+   Year_2021 = ifelse(Year == 2021, 1,0),
+   si_index_mod = ifelse(is.na(si_index), 1, ifelse(si_index == 0, .1, si_index)),
+  log_si_index_mod = log(si_index_mod),
+  si_index_high = ifelse(si_index > mean(si_index, na.rm = T), 1, 0))
+
+
+
+write_sf(full_data, "thesis_tract_data.geojson")
+
+
+
+```
+
+#Summary Mode Group Maps 
+```{r}
+library(tidyverse)
+library(tmap)
+library(ggplot2)
+library(sf)
+library(showtext)  # For better font handling
+library(ggtext)    # Allows for HTML-rich text formatting
+library(patchwork) 
+
+
+
+full_data <- read_sf("thesis_tract_data.geojson")
+
+
+
+
+
+full_data$cr_tracts_only <- ifelse(full_data$mode_group == "Only CR Access", 1, 0)
+
+full_data$log_si_index <- full_data$log_si_index_mod
+
+
+#TRANSPORT COST BURDEN CORRECTION
+full_data_mod <- full_data %>%
+  mutate(
+    inflation_adjusted_transportation_cost_burden = inflation_adjusted_transport_cost / inflation_adjusted_median_income,
+    log_transportation_cost_burden = log(inflation_adjusted_transportation_cost_burden)
+  ) %>%
+  filter(!is.na(si_index) & !is.na(log_transportation_cost_burden))
+
+
+#st_write(full_data_mod, "thesis_tract_data.geojson",delete_dsn = T)
+
+full_data <- full_data_mod
+
+full_data$urban_areas <- case_when(
+  full_data$operator == "Chicago" ~ "Chicago (CTA, Metra, SSL)",
+  full_data$operator == "LA" ~ "Los Angeles (LA Metro)",
+  full_data$operator == "MBTA" ~ "Boston (MBTA)",
+  full_data$operator == "SEPTA" ~ "Philadelphia (SEPTA)",
+  full_data$operator == "Seattle" ~ "Seattle (Sound Transit, King County Metro, Seattle Sounder)",
+  full_data$operator == "MTA" ~ "New York City (MTA, Metro-North, LIRR)",
+  full_data$operator == "MARTA" ~ "Atlanta (MARTA)"
+)
+
+
+# Load custom fonts (optional)
+# Set up font
+showtext_auto()
+font_add_google("Lato", "lato")
+
+# Filter for 2021
+data_2021 <- full_data %>% filter(Year == 2021)
+data_2019 <- full_data %>% filter(Year == 2019)
+# Set mode
+tmap_mode("plot")
+
+
+ # tm_basemap("OpenStreetMap")  + tm_shape(data_2021) + tm_polygons(
+ #    col = "mode_group",
+ #    palette = "cividis",
+ #    title = "Mode Group"
+ #  )
+
+# Create a single faceted map with basemap
+showtext_auto()
+font_add_google("Lato", "lato")
+
+n_groups <- length(unique(data_2021$mode_group))
+
+
+# Get consistent palette from cols4all
+mode_colors <- cols4all::c4a("cividis", n = n_groups)
+
+  # Use 'plot' for static maps
+
+# Build the map - operators
+map <- tm_basemap("CartoDB.PositronNoLabels") +
+  tm_shape(data_2021) +
+  tm_fill(
+    col = "mode_group",
+    palette = mode_colors,
+    border.col = NULL,
+    legend.is.portrait = FALSE,
+    title = "Mode Groups",
+    na.color = NA
+  ) +
+  tm_facets(
+    by = "urban_areas",
+    ncol = 2,
+    drop.units = TRUE,
+    free.coords = TRUE
+  ) +
+  tm_layout(
+    frame = FALSE,
+    bg.color = "white",
+    fontfamily = "Bahnschrift",
+    legend.outside = TRUE,
+    legend.outside.position = "bottom",
+    legend.align = "center",
+    legend.text.color = "black",
+    legend.text.size = 1,
+    legend.title.size = 1.3,
+    legend.title.fontface = "bold",
+    legend.bg.color = NA,
+    legend.bg.alpha = 0,
+    panel.label.bg.color = "white",
+    panel.label.frame = FALSE,
+    panel.label.color = "black",
+    panel.label.size = 1.4,
+    panel.label.height = 1.2,
+    panel.label.margin = grid::unit(2, "lines"),
+    asp = 0,
+#    outer.margins = c(0.1, 0.1, 0.15, 0.1),
+  #  inner.margins = 0
+  )
+
+tmap_save(
+  map,
+  filename = "report_faceted_transit_map.pdf",
+  width = 12,
+  height = 14,
+  dpi = 800
+)
+
+
+# Build the map - transit cost burden
+map_burden <- tm_basemap("CartoDB.PositronNoLabels") +
+  tm_shape(data_2019) +
+  tm_fill(
+    col = "log_transit_cost_burden",
+    palette = "inferno",  # high-contrast, dark-to-light
+    border.col = NULL,
+    style = "cont",
+    legend.is.portrait = FALSE,
+    title = "Log 2019 Transit Cost Burden (% of Median Household Income)",
+    na.color = NA
+  ) +
+  tm_facets(
+    by = "urban_areas",
+    ncol = 2,
+    drop.units = TRUE,
+    free.coords = TRUE
+  ) +
+  tm_layout(
+    frame = FALSE,
+    bg.color = "white",
+    fontfamily = "Bahnschrift",
+    legend.outside = TRUE,
+    legend.outside.position = "bottom",
+    legend.align = "center",
+    legend.text.color = "black",
+    legend.text.size = 1,
+    legend.title.size = 1.3,
+    legend.title.fontface = "bold",
+     legend.stack = "horizontal",
+    legend.bg.color = NA,
+    legend.bg.alpha = 0,
+    panel.label.bg.color = "white",
+    panel.label.frame = FALSE,
+    panel.label.color = "black",
+    panel.label.size = 1.4,
+    panel.label.height = 1.2,
+    panel.label.margin = grid::unit(2, "lines"),
+    asp = 0
+  )
+
+tmap_save(
+  map_burden,
+  filename = "report_faceted_transit_cb.pdf",
+  width = 12,
+  height = 14,
+  dpi = 800
+)
+
+library(flextable)
+
+# Create a summary table
+table_data <- full_data %>%
+  st_drop_geometry() %>%
+  group_by(Year, operator, mode_group) %>%
+  summarise(count = n()) %>%
+  pivot_wider(names_from = "operator", values_from = "count")
+
+
+# Map for eaach operator
+
+library(tmap)
+library(purrr)
+library(dplyr)
+
+# Ensure tmap is in plot mode
+tmap_mode("plot")
+
+# Create a vector of unique operators
+unique_operators <- unique(data_2021$operator)
+
+# Loop through each operator and save a map
+walk("MBTA", function(op) {
+  
+  # Filter data for this operator
+  op_data <- filter(data_2021, operator == op)
+  
+  # Create the map
+  op_map <- tm_basemap("CartoDB.PositronNoLabels") +
+    tm_shape(op_data) +
+    tm_fill(
+      col = "mode_group",
+      palette = mode_colors,
+      border.col = NULL,
+      legend.is.portrait = FALSE,
+      title = "Mode Groups"
+    ) +
+    tm_layout(
+      frame = FALSE,
+      bg.color = "#262626",
+      
+      # Legend appearance
+      legend.outside = TRUE,
+      legend.outside.position = "bottom",
+      legend.align = "center",
+      legend.text.color = "white",
+      legend.text.size = 0.8,
+      legend.title.size = 1,
+      legend.title.fontface = "bold",
+      legend.bg.color = NA,
+      legend.bg.alpha = 0,
+
+      # Title settings (optional)
+      main.title = op,
+      main.title.size = 1.5,
+      main.title.color = "white",
+      main.title.fontface = "bold",
+
+      # Layout
+      asp = 0,
+      outer.margins = 0,
+      inner.margins = 0
+    )
+
+  # Save the map as a high-resolution PDF
+  tmap_save(
+    op_map,
+    filename = paste0("map_", gsub("[^A-Za-z0-9]", "_", op), ".pdf"),
+    width = 8.5,  # can tweak for your publication
+    height = 11,
+    dpi = 600
+  )
+})
+
+
+```
+#SVI Index Sample Map
+
+
+```{r}
+library(tmap)
+
+MBTA_2021 <- full_data %>% filter(operator == "MBTA", Year == 2021) %>% filter(!is.na(si_index))
+
+MBTA_CR <- read_sf("C:\\Users\\virch\\MIT Dropbox\\Vir Chachra\\Vir Chachra’s files\\Thesis\\Thesis_Exploration\\Transit Systems Shapefile\\MBTA\\MBTA_Commuter_Rail_Lines\\MBTA_Commuter_Rail_Lines.shp")
+
+
+
+earth_palette <- c(
+  "#8c6d31", # golden brown
+  "#bd925a", # tan
+  "#a1b56c", # sage green
+  "#7b9e87", # dusty teal
+  "#5d7680", # slate blue
+  "#3b3b3b"  # deep charcoal
+)
+
+# Map with MBTA commuter rail overlay
+si_index_map <- tm_shape(MBTA_2021) +
+  tm_polygons(
+    "si_index",
+    palette = earth_palette,
+    border.col = NULL
+  ) +
+  tm_shape(MBTA_CR) +
+  tm_lines(
+    col = "white",
+    lwd = 2
+  ) +
+  tm_layout(
+    title.position = c("left", "top"),
+    title.size = 2.5,
+    title.color = "black",
+    fontfamily = "Bahnschrift",
+    frame = FALSE,
+    bg.color = NULL,
+    legend.show = FALSE,
+    inner.margins = c(0.02, 0.02, 0.02, 0.02),
+    asp = 0
+  )
+
+tmap_save(
+  si_index_map,
+  filename = "MBTA_2021_SVI_Index_Transparent.png",
+  width = 8,
+  height = 6,
+  dpi = 800,
+  bg = NA,  # ensures transparency
+  asp = 0
+)
+
+
+
+```
+
+
+#Transit and Transport Cost Burden Sample Map - Philly
+
+```{r}
+SEPTA_2021 <- full_data %>% filter(operator == "SEPTA", Year == 2021) %>% filter(!is.na(transportation_cost_burden))
+
+SEPTA_2019 <- full_data %>% filter(operator == "SEPTA", Year == 2019) %>% filter(!is.na(transportation_cost_burden))
+
+
+transport_burden_map_SEPTA <- tm_shape(SEPTA_2021) +
+    tm_polygons(
+      "transportation_cost_burden",
+      palette = "viridis",
+      title = "Total Transport Cost Burden 2021 - SEPTA",
+      border.col = NULL
+    ) + tm_layout(
+      title.position = c("left", "top"),
+      legend.position = c("right", "bottom"),
+      # Dynamic legend placement
+      frame = FALSE,
+      # No external frame
+      bg.color = "white",
+      legend.text.size = 1,
+      # 12-point font equivalent, adjust for visibility
+      legend.title.size = 1.2,
+      # Title size\
+      legend.outside = TRUE,
+      title.color = "black"
+    )
+ 
+  transport_burden_map_SEPTA <- transport_burden_map_SEPTA + tm_layout(
+    fontfamily = "Bahnschrift",
+    legend.title.fontface = "bold")
+
+
+transit_burden_map_SEPTA <- tm_shape(SEPTA_2021) +
+    tm_polygons(
+      "inflation_adjusted_transit_cost_burden",
+      palette = "viridis",
+      title = "Total Transit Cost Burden 2021 - SEPTA",
+      border.col = NULL
+    ) +
+    tm_layout(
+      title.position = c("left", "top"),
+      legend.position = c("right", "bottom"),
+      frame = FALSE, # No external frame
+      bg.color = "white",
+      legend.text.size = 1, # 12-point font equivalent, adjust for visibility
+      legend.title.size = 1.2,
+      legend.outside = TRUE,
+      title.color = "black"
+    )
+
+transit_burden_map_SEPTA <- transit_burden_map_SEPTA + tm_layout(
+    fontfamily = "Bahnschrift",
+    legend.title.fontface = "bold")
+
+
+tmap_save(
+  transport_burden_map_SEPTA,
+  "transport_burden_map_SEPTA_li.png",
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+tmap_save(
+  transit_burden_map_SEPTA,
+  "transit_burden_map_SEPTA.png",
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+    
+    
+st(SEPTA_2021)
+
+tmap_mode("plot")
+
+tm_shape(data_2021) +
+  tm_polygons(
+    col = "inflation_adjusted_transit_cost_burden",
+    pal = "viridis",
+    title = "Transportation Cost Burdens 2021",
+    border.col = "transparent"
+    ) +
+  tm_facets(by = "operator", ncol = 3) +
+  tm_layout(legend.outside.size = 0.2)
+
+```
+
+# Social Vulnerability Analysis 
+
+
+#Morans I Maps
+
+
+```{r}
+# Load packages
+library(tmap)
+library(dplyr)
+library(sf)
+library(openxlsx)
+library(rgeoda)
+
+# Ensure tmap is in plotting mode
+tmap_mode("plot")
+
+
+
+# Filter and split by operator + year
+data_filtered <- full_data %>%
+  filter(Year %in% c(2019, 2021)) %>%
+  filter(!is.na(si_index), !is.na(transit_spending)) %>%
+  group_by(operator, Year) %>%
+  group_split()
+
+# Compute clusters
+processed_data <- lapply(data_filtered, function(df) {
+  weights <- queen_weights(df, order = 1)
+  bimoran <- local_bimoran(weights, df[c("log_si_index_mod", "log_transportation_cost_burden")])
+  clusters <- lisa_clusters(bimoran)
+  df$lisa_cluster <- factor(clusters, levels = 0:4,
+                            labels = c("Not Significant", "High-High", "Low-Low", "Low-High", "High-Low"))
+  return(df)
+})
+
+combined_data <- do.call(rbind, processed_data)
+
+# Combine into one sf object
+combined_data_clean <- combined_data %>%
+  filter(!is.na(lisa_cluster)) %>%
+  mutate(lisa_cluster = factor(
+    lisa_cluster,
+    levels = c("Not Significant", "High-High", "Low-Low", "Low-High", "High-Low")
+  ))
+
+# Matching color vector
+cluster_colors <- c(
+  "gray80",   # Not Significant
+  "red",      # High-High
+  "blue",     # Low-Low
+  "lightblue",# Low-High
+  "pink"      # High-Low
+)
+
+
+final_map <- 
+  tm_basemap("CartoDB.PositronNoLabels") +
+  tm_shape(combined_data_clean) +
+  tm_fill(
+    col = "lisa_cluster",
+    palette = cluster_colors,
+    border.col = NULL,
+    legend.is.portrait = FALSE,
+    title = "LISA Cluster - Log SI Index x Log Transportation Cost Burden"
+    
+  ) +
+  tm_facets_grid(
+    rows = "operator",
+    columns = "Year",
+    drop.units = TRUE,
+    free.coords = TRUE
+  ) +
+  tm_layout(
+    frame = FALSE,
+    bg.color = "white",
+    
+    # Legend settings
+    legend.outside = TRUE,
+    legend.outside.position = "bottom",
+    legend.align = "center",
+    legend.text.color = "black",
+    legend.text.size = 0.8,
+    legend.title.size = 1,
+    legend.title.fontface = "bold",
+    legend.bg.color = NA,
+    legend.bg.alpha = 0,
+
+    # Panel labels
+    panel.label.bg.color = NA,
+    panel.label.frame = FALSE,
+    panel.label.color = "black",
+    panel.label.size = 1.5,
+    panel.label.height = 1.2,
+    panel.label.margin = unit(2, "lines"),
+
+    # Layout
+    asp = 0,
+    outer.margins = 0,
+    inner.margins = 0
+  )
+
+# Save high-resolution faceted map
+tmap_save(
+  final_map,
+  filename = file.path("Faceted_Bivariate_Moran_Map_All_Operators_Transportation_Logged.pdf"),
+  width = 10,
+  height = 12,
+  dpi = 1200
+)
+
+
+
+```
+
+Morans I maps for each operator 
+
+```{r}
+
+library(tmap)
+library(dplyr)
+library(purrr)
+
+# Make sure output folder exists
+dir.create("individual_operator_maps", showWarnings = FALSE)
+
+# Clean and prepare the data
+combined_data_clean <- combined_data %>%
+  filter(!is.na(lisa_cluster)) %>%
+  mutate(lisa_cluster = factor(
+    lisa_cluster,
+    levels = c("Not Significant", "High-High", "Low-Low", "Low-High", "High-Low")
+  ))
+
+# Color palette
+cluster_colors <- c(
+  "gray80",   # Not Significant
+  "red",      # High-High
+  "blue",     # Low-Low
+  "lightblue",# Low-High
+  "pink"      # High-Low
+)
+
+# Get unique operators
+operators <- unique(combined_data_clean$operator)
+
+# Loop through each operator
+walk(operators, function(op) {
+  op_data <- combined_data_clean %>% filter(operator == op)
+
+op_map <- 
+  tm_basemap("CartoDB.PositronNoLabels") +
+  tm_shape(op_data) +
+  tm_fill(
+    col = "lisa_cluster",
+    palette = cluster_colors,
+    border.col = NULL,
+    legend.is.portrait = FALSE,
+    title = paste(op, "LISA Cluster - Log SI Index x Log Transportation Cost Burden")
+    ) +
+  tm_facets(rows = "Year", drop.units = TRUE, free.coords = TRUE) +
+  tm_layout(
+    frame = FALSE,
+    bg.color = "white",
+
+    # Legend settings
+    legend.outside = TRUE,
+    legend.outside.position = "bottom",
+    legend.text.color = "black",
+    legend.text.size = 0.8,
+    legend.title.size = 1,
+    legend.title.fontface = "bold",
+    legend.bg.color = NA,
+    legend.bg.alpha = 0,
+
+    # Panel labels
+    panel.label.bg.color = NA,
+    panel.label.frame = FALSE,
+    panel.label.color = "black",
+    panel.label.size = 1.5,
+    panel.label.height = 1.2,
+    panel.label.margin = unit(2, "lines"),
+
+    # Layout
+    asp = 0,
+    outer.margins = 0,
+    inner.margins = 0
+  )
+
+  filename <- paste0("Transport_Bivariate_Moran_Map_", gsub("[^A-Za-z0-9]", "_", op), ".pdf")
+
+  tmap_save(
+    op_map,
+    filename = file.path("individual_operator_maps", filename),
+    width = 10,
+    height = 14,
+    dpi = 600
+  )
+})
+
+
+```
+
+
+Summary Table: MBTA/SEPTA/Chicago(CTA/METRA/South Shore Line) 2019/2021
+
+```{r}
+library(dplyr)
+library(gt)
+
+summary_table_full_2019 <- full_data %>%
+  filter(Year == 2019) %>%
+  mutate(total_income = inflation_adjusted_mean_income * population) %>%
+   st_drop_geometry() %>%
+  group_by(operator, mode_group) %>%
+  summarise(
+    `Number of Tracts`  = n(), 
+    `Total Population` = round(sum(population, na.rm = T), 0),
+    `Average Income` = round(sum(total_income, na.rm = T)/sum(population, na.rm = T), 0),
+    `Average Transit Miles` = round(mean(transit_miles, na.rm = TRUE), 0),
+    `Average HH Transportation Costs` = round(mean(inflation_adjusted_transport_cost, na.rm = T),2),
+    `Average HH Transit Cost` = round(mean(inflation_adjusted_transit_cost, na.rm = TRUE), 2),
+    `Average Social Vulnerability Component Score_2019` = round(mean(si_index, na.rm = TRUE), 2)
+  ) 
+
+sv_table_19 <- summary_table_full_2019 %>%
+  select(operator, mode_group, `Average Social Vulnerability Component Score_2019`) %>%
+  pivot_wider(values_from = `Average Social Vulnerability Component Score_2019`, names_from = mode_group)
+
+
+
+summary_table_full_2021 <- full_data %>%
+    filter(Year == 2021) %>%
+    mutate(total_income = inflation_adjusted_mean_income * population) %>%
+   st_drop_geometry() %>%
+ group_by(operator, mode_group) %>%
+  summarise(
+    `Number of Tracts` = n(),
+    `Total Population` = round(sum(population, na.rm = T), 0),
+    `Average Income` = round(sum(total_income, na.rm = T)/sum(population, na.rm=T), 0),
+    `Average Transit Miles` = round(mean(transit_miles, na.rm = TRUE), 0),
+    `Average HH Transportation Costs` = round(mean(inflation_adjusted_transport_cost, na.rm = T),0),
+    `Average HH Transit Cost` = round(mean(inflation_adjusted_transit_cost, na.rm = TRUE), 0),
+    `Average Social Vulnerability Component Score_2021` = round(mean(si_index, na.rm = TRUE), 2)
+  )
+
+sv_table_21 <- summary_table_full_2021 %>%
+  select(operator, mode_group, `Average Social Vulnerability Component Score_2021`) %>%
+  pivot_wider(values_from = `Average Social Vulnerability Component Score_2021`, names_from = mode_group)
+
+
+difference_table <- summary_table_full_2019 %>%
+  rename_with(~ paste0(.x, "_2019"), -c(mode_group, operator, `Average Social Vulnerability Component Score_2019`)) %>%
+  inner_join(
+    summary_table_full_2021 %>% 
+      rename_with(~ paste0(.x, "_2021"), -c(mode_group, operator, `Average Social Vulnerability Component Score_2021`)),
+    by = c("mode_group", "operator")
+  ) %>%
+  mutate(
+    `Difference in Population` = `Total Population_2021` - `Total Population_2019`,
+    `Difference in Average Income` = `Average Income_2021` - `Average Income_2019`,
+    `Difference in Average Transit Miles` = `Average Transit Miles_2021` - `Average Transit Miles_2019`,
+    `Difference in HH Transportation Costs` = `Average HH Transportation Costs_2021` - `Average HH Transportation Costs_2019`,
+    `Difference in Average HH Transit Cost` = `Average HH Transit Cost_2021` - `Average HH Transit Cost_2019`,
+    `Difference in Average Social Vulnerability Component Score` = `Average Social Vulnerability Component Score_2021` - `Average Social Vulnerability Component Score_2019`
+  ) %>%
+  select(
+    mode_group, operator,
+    "Number of Tracts" = `Number of Tracts_2019`,
+    `Difference in Population`,
+    `Difference in Average Income`,
+    `Difference in Average Transit Miles`,
+    `Difference in HH Transportation Costs`,
+    `Difference in Average HH Transit Cost`,
+    `Difference in Average Social Vulnerability Component Score`
+  )
+
+
+
+
+```
+t tests
+```{r}
+
+t_test_mode_group_SEPTA <- data.frame()
+t_test_mode_group_MBTA <- data.frame()
+t_test_mode_group_LA <- data.frame()
+t_test_mode_group_Chicago <- data.frame()
+t_test_mode_group_MTA <- data.frame()
+t_test_mode_group_MARTA <- data.frame()
+t_test_mode_group_Seattle <- data.frame()
+
+for(x in unique(full_data$mode_group)) {
+  t_test_mode_group_SEPTA <-  rbind(
+    t_test_mode_group_SEPTA,
+    nice_t_test(
+      full_data %>% filter(operator == "SEPTA", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+
+t_test_mode_group_SEPTA$operator <- "SEPTA"
+
+for(x in unique(full_data$mode_group)) {
+  t_test_mode_group_MBTA <-  rbind(
+    t_test_mode_group_MBTA,
+    nice_t_test(
+      full_data %>% filter(operator == "MBTA", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+
+t_test_mode_group_MBTA$operator <- "MBTA"
+
+
+for(x in unique(full_data$mode_group)) {
+  t_test_mode_group_LA <-  rbind(
+    t_test_mode_group_LA,
+    nice_t_test(
+      full_data %>% filter(operator == "LA", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+
+t_test_mode_group_LA$operator <- "LA"
+
+
+for(x in unique(full_data$mode_group)) {
+  t_test_mode_group_Chicago <-  rbind(
+    t_test_mode_group_Chicago,
+    nice_t_test(
+      full_data %>% filter(operator == "Chicago", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+
+t_test_mode_group_Chicago$operator <- "Chicago"
+
+
+for(x in unique(full_data$mode_group)) {
+  t_test_mode_group_MTA <-  rbind(
+    t_test_mode_group_MTA,
+    nice_t_test(
+      full_data %>% filter(operator == "MTA", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+t_test_mode_group_MTA$operator <- "MTA"
+
+
+
+for(x in unique(full_data$mode_group)) {
+  t_test_mode_group_Seattle <-  rbind(
+    t_test_mode_group_Seattle,
+    nice_t_test(
+      full_data %>% filter(operator == "Seattle", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+t_test_mode_group_Seattle$operator <- "Seattle"
+
+
+
+for(x in c("Bus and Rapid Transit Access", "Only Bus Access")) {
+  t_test_mode_group_MARTA <-  rbind(
+    t_test_mode_group_MARTA,
+    nice_t_test(
+      full_data %>% filter(operator == "MARTA", mode_group == x),
+      response = c(
+        "population",
+        "inflation_adjusted_mean_income",
+        "transit_miles",
+        "inflation_adjusted_transport_cost",
+        "inflation_adjusted_transit_cost",
+        "si_index"
+      ),
+      group = "Year",
+      warning = F
+    ) %>%  mutate(mode_group = x)
+  )
+   
+  
+}
+t_test_mode_group_MARTA$operator <- "MARTA"
+
+
+
+t_tests_full <- rbind(t_test_mode_group_LA, t_test_mode_group_SEPTA, t_test_mode_group_Chicago, t_test_mode_group_MBTA,t_test_mode_group_MTA, t_test_mode_group_Seattle, t_test_mode_group_MARTA ) %>%
+  mutate(Significance = ifelse(p > 0.05, "Not Significant", "Significant (at p<.05)"),
+         tags = case_when(
+           `Dependent Variable` == "population" ~ "Difference in Population",
+           `Dependent Variable` == "inflation_adjusted_mean_income" ~ "Difference in Average Income",
+           `Dependent Variable` == "transit_miles" ~ "Difference in Average Transit Miles",
+           `Dependent Variable` == "inflation_adjusted_transport_cost" ~ "Difference in HH Transportation Costs",
+           `Dependent Variable` == "inflation_adjusted_transit_cost" ~ "Difference in Average HH Transit Cost",
+           `Dependent Variable` == "si_index" ~ "Difference in Average Social Vulnerability Component Score",
+           TRUE ~ NA_character_  # Catch any unexpected values
+         ))
+
+
+# 
+# difference_table_full <- difference_table %>%
+#   pivot_longer(cols = -c(operator, mode_group), names_to = "tags", values_to = "value") %>%
+#   left_join(t_tests_full %>% select(Significance, operator, mode_group, tags), 
+#             by = c("operator", "mode_group", "tags"))
+# 
+# difference_table_wide <- difference_table_full %>%
+#   pivot_wider(names_from = tags, values_from = value) %>%
+#   pivot_wider(names_from = tags, values_from = Significance, names_prefix = "Significance_")
+
+
+
+write.csv(t_tests_full,"t_tests_full.csv")
+
+
+```
+Nicely Formatted Tables
+```{r}
+library(flextable)
+
+
+x <- difference_table %>%
+  gt() %>%
+  tab_header(
+    title = "Difference Table: 2019 vs 2021",
+    subtitle = "Changes in Key Metrics Between Years"
+  ) %>%
+  cols_label(
+    mode_group = "Mode Group",
+    operator = "Operator",
+    `Number of Tracts` = "Number of Tracts",
+    `Difference in Population` = "Diff: Total Population", 
+    `Difference in Average Income` = "Diff: Average Income ($)",
+    `Difference in Average Transit Miles` = "Diff: Average Transit Miles",
+    `Difference in HH Transportation Costs` = "Diff: HH Transportation Costs ($)",
+    `Difference in Average HH Transit Cost` = "Diff: HH Transit Cost ($)",
+    `Difference in Average Social Vulnerability Component Score` = "Diff: Social Vulnerability Score"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  fmt_number(
+    columns = c(
+      `Difference in Average Income`, 
+      `Difference in HH Transportation Costs`, 
+      `Difference in Average HH Transit Cost`
+    ),
+    use_seps = TRUE,  # Adds comma separators
+    decimals = 0  # Removes decimal places for cleaner formatting
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    data_row.padding = px(6)
+  ) %>%
+   gtsave("difference.html")
+
+
+
+
+
+```
+
+Bar Plots Instead of Differnces
+```{r}
+
+plot_data <- full_data %>%
+  st_drop_geometry() %>%
+  group_by(mode_group, Year) %>%
+  summarise(avg_transit_spending = mean(inflation_adjusted_transit_cost, na.rm = TRUE),
+            avg_transport_spending = mean(inflation_adjusted_transport_cost, na.rm = T), 
+            avg_si_index = mean(si_index, na.rm = TRUE))
+
+plot_data_raw <- full_data %>%
+  st_drop_geometry() %>%
+  select(mode_group, Year, si_index) 
+
+plot_data_raw_filtered <- plot_data_raw %>%
+  filter(Year %in% c(2019, 2021))
+
+# 1. Histogram for Transport Cost Burden (assuming you have a `transport_cost_burden` variable)
+ggplot(full_data %>% st_drop_geometry(), aes(x = inflation_adjusted_transport_cost, fill = factor(Year))) +
+  geom_histogram(binwidth = 0.1, position = "dodge", alpha = 0.7, color = "black") +
+  geom_vline(aes(xintercept = mean(inflation_adjusted_transport_cost, na.rm = TRUE)), color = "red", linetype = "dashed", size = 1) +
+  labs(
+    title = "Transport Cost Burden (2019 & 2021)",
+    x = "Transport Cost Burden",
+    y = "Frequency"
+  ) +
+  scale_fill_brewer(palette = "Dark2") +  # Dark earth-tone palette
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, family = "Bahnschrift"),
+    axis.text.y = element_text(family = "Bahnschrift"),
+    legend.title = element_blank(),
+    plot.title = element_text(family = "Bahnschrift")
+  )
+
+# 2. Histogram for Transit Cost Burden (assuming you have a `transit_cost_burden` variable)
+ggplot(plot_data_raw_filtered, aes(x = transit_cost_burden, fill = factor(Year))) +
+  geom_histogram(binwidth = 0.1, position = "dodge", alpha = 0.7, color = "black") +
+  geom_vline(aes(xintercept = mean(transit_cost_burden, na.rm = TRUE)), color = "red", linetype = "dashed", size = 1) +
+  labs(
+    title = "Transit Cost Burden (2019 & 2021)",
+    x = "Transit Cost Burden",
+    y = "Frequency"
+  ) +
+  scale_fill_brewer(palette = "Dark2") +  # Dark earth-tone palette
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, family = "Bahnschrift"),
+    axis.text.y = element_text(family = "Bahnschrift"),
+    legend.title = element_blank(),
+    plot.title = element_text(family = "Bahnschrift")
+  )
+
+# 3. Histogram for SI Index
+ggplot(plot_data_raw_filtered, aes(x = si_index, fill = factor(Year))) +
+  geom_histogram(binwidth = 0.1, position = "dodge", alpha = 0.7, color = "black") +
+  geom_vline(aes(xintercept = mean(si_index, na.rm = TRUE)), color = "red", linetype = "dashed", size = 1) +
+  labs(
+    title = "SI Index (2019 & 2021)",
+    x = "SI Index",
+    y = "Frequency"
+  ) +
+  scale_fill_brewer(palette = "Dark2") +  # Dark earth-tone palette
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, family = "Bahnschrift"),
+    axis.text.y = element_text(family = "Bahnschrift"),
+    legend.title = element_blank(),
+    plot.title = element_text(family = "Bahnschrift")
+  )
+
+
+```
+
+# Scatterplots
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+
+# Scatter plot for 2019
+scatter_plot_2019_transit <- ggplot(
+  full_data %>% filter(Year == 2019),
+  aes(x = log_transit_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Log % Income Spent on Transit and Social Vulnerability (2019)",
+    x = "Log % of HH Income Spent on Transit",
+    y = "Social Vulnerability Index",
+    color = "Mode Access"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Bahnschrift"),
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) 
+
+# Scatter plot for 2021
+scatter_plot_2021_transit <- ggplot(
+  full_data %>% filter(Year == 2021),
+  aes(x = log_transit_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Log % Income Spent on Transit and Social Vulnerability (2021)",
+    x = "Log % of HH Income Spent on Transit",
+    y = "Social Vulnerability Index",
+    color = "Mode Access"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Bahnschrift"),
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) 
+
+# Scatter plot for 2019
+scatter_plot_2019_transport <- ggplot(
+  full_data_mod %>% filter(Year == 2019),
+  aes(x = log_transportation_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Log % Income Spent on Transportation and Social Vulnerability (2019)",
+    x = "Log % of HH Income Spent on Transportation",
+    y = "Social Vulnerability Index",
+    color = "Mode Access"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Bahnschrift"),
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) 
+
+# Scatter plot for 2021
+scatter_plot_2021_transport <- ggplot(
+  full_data_mod %>% filter(Year == 2021),
+  aes(x = log_transportation_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = colors) +
+  labs(
+    title = "Log % Income Spent on Transportation and Social Vulnerability (2021)",
+    x = "Log % of HH Income Spent on Transportation",
+    y = "Social Vulnerability Index",
+    color = "Mode Access"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Bahnschrift"),
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) 
+
+# Arrange scatter plots together
+scatter_arrange_transport <- ggarrange(scatter_plot_2019_transport, scatter_plot_2021_transport, ncol = 2, common.legend = TRUE, legend = "bottom")
+
+
+# Arrange scatter plots together
+scatter_arrange_transit <- ggarrange(scatter_plot_2019_transit, scatter_plot_2021_transit, ncol = 2, common.legend = TRUE, legend = "bottom")
+
+
+
+```
+
+Line Plots
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(grid)  # for unit()
+loadfonts(device = "pdf")
+font_add("Bahnschrift", regular = "C:/Windows/Fonts/bahnschrift.ttf")
+
+# Define custom theme with no legend title and adjusted spacing
+custom_theme <- theme_minimal() +
+  theme(
+    text = element_text(family = "Bahnschrift"),
+    axis.title = element_text(size = 15),
+    axis.title.x = element_text(margin = margin(t = 12)),
+    axis.text = element_text(size = 12),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 15),
+    legend.key.width = unit(1.5, "cm"),       # Wider key
+    legend.box.spacing = unit(1.5, "cm"),     # Spacing between items
+    legend.margin = margin(t = 15, r = 15, b = 15, l = 15),
+    panel.grid.minor = element_blank()
+  )
+
+# Define guide for consistent legend layout
+shared_legend_guide <- guide_legend(
+  nrow = 2,
+  byrow = TRUE,
+  label.theme = element_text(margin = margin(l = 6, r = 6))
+)
+
+# Line plot for 2019 (Transit)
+line_plot_2019_transit <- ggplot(
+  full_data %>% filter(Year == 2019),
+  aes(x = log_transit_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_smooth(method = "lm", se = FALSE, size = 1.5) +
+  scale_color_manual(values = colors, guide = shared_legend_guide) +
+  labs(
+    x = "Log % of HH Income Spent on Transit",
+    y = "Social Vulnerability Index",
+    color = NULL
+  ) +
+  custom_theme
+
+# Line plot for 2021 (Transit)
+line_plot_2021_transit <- ggplot(
+  full_data %>% filter(Year == 2021),
+  aes(x = log_transit_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_smooth(method = "lm", se = FALSE, size = 1.5) +
+  scale_color_manual(values = colors, guide = shared_legend_guide) +
+  labs(
+    x = "Log % of HH Income Spent on Transit",
+    y = "Social Vulnerability Index",
+    color = NULL
+  ) +
+  custom_theme
+
+# Line plot for 2019 (Transportation)
+line_plot_2019_transport <- ggplot(
+  full_data_mod %>% filter(Year == 2019),
+  aes(x = log_transportation_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_smooth(method = "lm", se = FALSE, size = 1.5) +
+  scale_color_manual(values = colors, guide = shared_legend_guide) +
+  labs(
+    x = "Log % of HH Income Spent on Transportation",
+    y = "Social Vulnerability Index",
+    color = NULL
+  ) +
+  custom_theme
+
+# Line plot for 2021 (Transportation)
+line_plot_2021_transport <- ggplot(
+  full_data_mod %>% filter(Year == 2021),
+  aes(x = log_transportation_cost_burden, y = si_index, color = mode_group)
+) +
+  geom_smooth(method = "lm", se = FALSE, size = 1.5) +
+  scale_color_manual(values = colors, guide = shared_legend_guide) +
+  labs(
+    x = "Log % of HH Income Spent on Transportation",
+    y = "Social Vulnerability Index",
+    color = NULL
+  ) +
+  custom_theme
+
+# Combine all 4 plots with shared legend
+all_line_plots <- ggarrange(
+  line_plot_2019_transport, line_plot_2021_transport,
+  line_plot_2019_transit, line_plot_2021_transit,
+  ncol = 2, nrow = 2,
+  common.legend = TRUE,
+  legend = "bottom"
+)
+
+# Save to PDF
+ggsave(
+  all_line_plots,
+  filename = "combined_line_plots.pdf",
+  width = 15, height = 18, dpi = 600
+)
+```
+
+# models - Diff in Diff - All systems 2019 and 2021 - The Average Household
+
+```{r Diff in Diff}
+
+control_vars <- c("population", "log_emp_density")
+
+
+mod1 <- lm(as.formula(
+  paste(
+    "log_si_index ~ log_transportation_cost_burden + cr_tracts + operator + Year + log_transportation_cost_burden*Year + log_transportation_cost_burden*Year*cr_tracts +",
+    paste(control_vars, collapse = " + ")
+  )),
+  data = full_data 
+)
+
+mod2 <- lm(as.formula(
+  paste(
+    "log_si_index_mod  ~ log_transit_cost_burden + cr_tracts + operator + Year_2021 + log_transit_cost_burden*Year_2021 + log_transit_cost_burden*Year_2021*cr_tracts +", 
+     paste(control_vars, collapse = " + ")
+  )),
+  data = full_data
+)
+
+
+#DID Analysis Models
+
+library(sandwich)
+library(lmtest)
+
+# Fit your model as you normally would
+mod3 <- lm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ cr_tracts + Year_2021 + si_index_high + operator + cr_tracts*Year_2021 + si_index_high*cr_tracts*Year_2021 +",
+    paste(control_vars, collapse = " + ")
+  )),
+  data = full_data_mod 
+)
+
+# Compute robust standard errors using vcovHC
+robust_se <- vcovHC(mod3, type = "HC3")  # Type "HC3" is often recommended for small samples
+
+# View the results with robust standard errors
+coeftest(mod3, vcov. = robust_se)
+
+mod4 <- lm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ rt_tracts + Year_2021 + si_index_high + operator + rt_tracts*Year_2021 + si_index_high*rt_tracts*Year_2021 + ",
+     paste(control_vars, collapse = " + ")
+  )),
+  data = full_data 
+)
+
+mod5 <- lm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ bus_tracts + Year_2021 + si_index_high + operator + bus_tracts*Year_2021 + si_index_high*bus_tracts*Year_2021 + ",
+     paste(control_vars, collapse = " + ")
+  )),
+  data = full_data 
+)
+
+mod6 <- lm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ cr_tracts_only + Year_2021 + si_index_high + operator + cr_tracts_only*Year_2021 + si_index_high*cr_tracts_only*Year_2021 + ",
+     paste(control_vars, collapse = " + ")
+  )),
+  data = full_data 
+)
+
+
+# Load the car package for vif()
+library(car)
+
+# Create the formula string including your controls
+formula_str <- paste(
+  "log_transportation_cost_burden ~ treatment * Year_2021 * si_index_high + operator +",
+  paste(control_vars, collapse = " + ")
+)
+
+# Fit the linear model
+lm_transport <- lm(as.formula(formula_str), data = full_data_mod)
+
+# Calculate VIFs
+vif_values <- vif(lm_transport)
+
+# Print VIF values
+print(vif_values)
+
+
+
+
+```
+
+
+#Spatial Regression
+
+```{r}
+library(spdep)
+library(spatialreg)
+
+# Compute Moran's I
+neighbors <- poly2nb(full_data_mod, queen = TRUE)
+weights   <- nb2listw(neighbors, style = "W", zero.policy = TRUE)
+
+
+#morans tests indicates high spatial autocorrelation 
+moran_test <- moran.test(full_data_mod$log_transportation_cost_burden, weights, zero.policy = TRUE)
+
+#lm tests indicates that i need to use an error model 
+# lm_tests <- lm.LMtests(mod3, weights, test = "all")
+
+
+# Spatial Error and Lag Models 
+
+
+
+#CR Tracts as Treatment
+
+full_data_mod$treatment <- as.factor(full_data_mod$cr_tracts)
+
+# transit
+error_model_cr <- errorsarlm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+lag_model_cr <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+#transport
+
+error_model_cr_transport <- errorsarlm(as.formula(
+  paste(
+    "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+lag_model_cr_transport <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,  # Exclude Seattle for this model
+  listw = weights,
+  method = "Matrix"
+)
+
+
+# Tests to choose between spatial error or lag - should choose lag (lower AIC/BIC and less spatial autocorrelation)
+AIC(error_model_cr, lag_model_cr)
+BIC(error_model_cr, lag_model_cr)
+
+moran.test(residuals(error_model_cr), weights)
+moran.test(residuals(lag_model_cr), weights)
+
+
+residuals_cr <- residuals(error_model_cr)
+fitted_values_cr <- fitted(error_model_cr)
+
+# Base R plot (simple)
+plot(fitted_values_cr, residuals_cr, 
+     main = "Residual Plot", 
+     xlab = "Fitted Values", 
+     ylab = "Residuals", 
+     pch = 16, col = "blue")
+abline(h = 0, col = "red")  # Add a horizontal line at 0
+
+
+#RT Tracts
+
+full_data_mod$treatment <- as.factor(full_data_mod$rt_tracts)
+
+# transit
+error_model_rt <- errorsarlm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+lag_model_rt <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+# transport
+error_model_rt_transport <- errorsarlm(as.formula(
+  paste(
+    "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+lag_model_rt_transport <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+#Bus Tracts
+
+full_data_mod$treatment <- as.factor(full_data_mod$bus_tracts)
+
+#transit
+error_model_bus <- errorsarlm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+lag_model_bus <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+#transport
+
+error_model_bus_transport <- errorsarlm(as.formula(
+  paste(
+    "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+lag_model_bus_transport <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+#CR Tracts Only
+
+full_data_mod$treatment <- as.factor(full_data_mod$cr_tracts_only)
+
+#transit
+error_model_cr_only <- errorsarlm(as.formula(
+  paste(
+    "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+lag_model_cr_only <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transit_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+#transport
+error_model_cr_only_transport <- errorsarlm(as.formula(
+  paste(
+    "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+lag_model_cr_only_transport <- lagsarlm(
+  as.formula(
+    paste(
+      "log_transportation_cost_burden ~ treatment + Year_2021 + si_index_high + operator + treatment*Year_2021 + si_index_high*treatment*Year_2021 + ",
+      paste(control_vars, collapse = " + ")
+    )
+  ),
+  data = full_data_mod,
+  listw = weights,
+  method = "Matrix"
+)
+
+table(full_data_mod$treatment, full_data_mod$Year_2021, full_data_mod$si_index_high)
+
+
+#Switched - CR Tracts Only Predicting Log Social Vulnerability 
+
+full_data_mod$treatment <- full_data_mod$log_transit_cost_burden
+
+error_model_cr_only_si_index_transit <- errorsarlm(as.formula(
+  paste(
+    "log_si_index  ~ treatment + cr_tracts_only + operator + Year_2021 + cr_tracts_only*Year_2021 + treatment*Year_2021*cr_tracts_only +",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+error_model_cr_si_index_transit <- errorsarlm(as.formula(
+  paste(
+    "log_si_index  ~ treatment + cr_tracts + operator + Year_2021 + cr_tracts*Year_2021 + treatment*Year_2021*cr_tracts +",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+moran.test(residuals(error_model_cr_only_si_index_transit), weights)
+# Going with error model here because of lower AIC/BIC
+
+
+full_data_mod$treatment <- full_data_mod$log_transportation_cost_burden
+
+
+error_model_cr_only_si_index_transport <- errorsarlm(as.formula(
+  paste(
+    "log_si_index  ~ treatment + cr_tracts_only + operator + Year_2021 + cr_tracts_only*Year_2021 + treatment*Year_2021*cr_tracts_only +",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+
+error_model_cr_si_index_transport <- errorsarlm(as.formula(
+  paste(
+    "log_si_index  ~ treatment + cr_tracts + operator + Year_2021 + cr_tracts*Year_2021 + treatment*Year_2021*cr_tracts +",
+    paste(control_vars, collapse = " + ")
+  )
+), data = full_data_mod, listw = weights, method = "Matrix")
+
+
+ 
+
+```
+
+
+
+
+```{r}
+
+
+library(stargazer)
+
+
+#transit cost burden
+
+# Extract lag coefficients and standard errors
+lag_coefs <- sapply(
+  list(lag_model_cr, lag_model_rt, lag_model_bus, lag_model_cr_only),
+  function(model) model$rho
+)
+
+lag_se <- sapply(
+  list(lag_model_cr, lag_model_rt, lag_model_bus, lag_model_cr_only),
+  function(model) sqrt(model$rho.se)
+)
+
+# Compute z-scores and p-values
+lag_z <- lag_coefs / lag_se
+lag_p <- 2 * (1 - pnorm(abs(lag_z)))
+
+# Significance stars
+sig_stars <- ifelse(lag_p < 0.001, "***",
+              ifelse(lag_p < 0.01, "**",
+              ifelse(lag_p < 0.05, "*",
+              ifelse(lag_p < 0.1, ".", ""))))
+
+# Format rho with SE and significance
+rho_row <- paste0(
+  round(lag_coefs, 3), " (", round(lag_se, 3), ")", sig_stars
+)
+
+# Add this to your stargazer table
+html_output <- stargazer(
+  lag_model_cr,
+  lag_model_rt,
+  lag_model_bus,
+  lag_model_cr_only,
+  type = "latex",
+  title = "Spatial Lag Models for Transit Cost Burden",
+  dep.var.labels.include = TRUE,
+  dep.var.labels = "Log Transit Cost Burden",
+  column.labels = c(
+    "Commuter Rail Access",
+    "Rapid Transit Access",
+    "Bus Access",
+    "Commuter Rail Access ONLY"
+  ),
+  covariate.labels = c(
+    "Mode Access Treatment",
+    "Year 2021",
+    "SI Index High", 
+    "Treatment * Year 2021",
+    "Treatment * SI Index High",
+    "Year 2021 * SI Index High",
+    "SI Index High * Treatment * Year 2021"
+  ),
+  add.lines = list(c("Lag Coefficient (rho)", rho_row)),
+  omit.stat = c("f", "ser"),
+  omit = c("operator", "population", "log_emp_density"),
+  notes = "Standard errors are robust to spatial correlation. Operator, population, and employment density are included as controls but omitted from the table.",
+  notes.align = "l"
+)
+
+# Save as an HTML file
+#write(html_output, file = "spatial_lag_models_transit_cost_burden.html")
+write(html_output, file = "spatial_lag_models_transit_cost_burden.tex")
+
+#SI index 
+html_output_2 <- stargazer(
+  error_model_cr_only_si_index_transit,
+  error_model_cr_only_si_index_transport,
+  type = "latex",
+  # Output as HTML
+  title = "Spatial Error Models: Cost Burden Effect on SI Index (Commuter Rail Only)",
+  dep.var.labels = "Log SI Index",
+  column.labels = c(
+    "Transit Cost Burden",
+    "Transport Cost Burden"
+  ),
+  covariate.labels = c(
+    "Log Cost Burden", 
+    "Mode Access Treatment - CR Tracts Only",
+    "Year 2021",
+    "CR Tracts Only * Year 2021",
+    "Log Cost Burden * Year 2021",
+    "CR Tracts Only * Log Cost Burden",
+    "Log Cost Burden * CR Tracts Only * Year 2021"
+  ),
+  omit.stat = c("f", "ser"),
+  omit = c("operator", "population", "log_emp_density"),
+  notes = "Standard errors are robust to spatial correlation.Operator, population, and employment density are included as controls but omitted from the table.",
+  notes.align = "l"
+)
+
+#write(html_output_2, file = "spatial_error_models_si_index.html")
+write(html_output_2, file = "spatial_error_models_si_index.tex")
+
+# transport cost burden
+
+# Extract lag coefficients and standard errors
+# lag_coefs_transport <- sapply(
+#   list(lag_model_cr_transport, lag_model_rt_transport, lag_model_bus_transport, lag_model_cr_only_transport),
+#   function(model) model$rho
+# )
+# 
+# lag_se_transport <- sapply(
+#   list(lag_model_cr_transport, lag_model_rt_transport, lag_model_bus_transport, lag_model_cr_only_transport),
+#   function(model) sqrt(model$rho.se)
+# )
+# 
+# # Compute z-scores and p-values
+# lag_z_transport <- lag_coefs_transport / lag_se_transport
+# lag_p_transport <- 2 * (1 - pnorm(abs(lag_z_transport)))
+# 
+# # Significance stars
+# sig_stars_transport <- ifelse(lag_p_transport < 0.001, "***",
+#               ifelse(lag_p_transport < 0.01, "**",
+#               ifelse(lag_p_transport < 0.05, "*",
+#               ifelse(lag_p_transport < 0.1, ".", ""))))
+# 
+# # Format rho with SE and significance
+# rho_row_transport <- paste0(
+#   round(lag_coefs_transport, 3), " (", round(lag_se_transport, 3), ")", sig_stars_transport
+# )
+# 
+# # Add this to your stargazer table
+# html_output_transport <- stargazer(
+#   lag_model_cr_transport,
+#   lag_model_rt_transport,
+#   lag_model_bus_transport,
+#   lag_model_cr_only_transport,
+#   type = "html",
+#   title = "Spatial Lag Models for Transport Cost Burden",
+#   dep.var.labels.include = TRUE,
+#   dep.var.labels = "Log Transport Cost Burden",
+#   column.labels = c(
+#     "Commuter Rail Access",
+#     "Rapid Transit Access",
+#     "Bus Access",
+#     "Commuter Rail Access ONLY"
+#   ),
+#   covariate.labels = c(
+#     "Mode Access Treatment",
+#     "Year 2021",
+#     "SI Index High", 
+#     "Treatment * Year 2021",
+#     "Treatment * SI Index High",
+#     "Year 2021 * SI Index High",
+#     "SI Index High * Treatment * Year 2021"
+#   ),
+#   add.lines = list(c("Lag Coefficient (rho)", rho_row_transport)),
+#   omit.stat = c("f", "ser"),
+#   omit = c("operator", "population", "log_emp_density"),
+#   notes = "Standard errors are robust to spatial correlation. Operator, population, and employment density are included as controls but omitted from the table.",
+#   notes.align = "l"
+# )
+# 
+# write(html_output_transport, file = "spatial_lag_models_transport_cost_burden.html")
+# 
+
+
+```
+
+
+
+
+
